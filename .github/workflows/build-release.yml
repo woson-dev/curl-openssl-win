@@ -1,0 +1,159 @@
+name: Build curl+OpenSSL Windows packages
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      curl_version:
+        description: "curl version (e.g. 8.11.1)"
+        required: true
+        default: "8.11.1"
+      openssl_version:
+        description: "OpenSSL version (e.g. 3.3.2)"
+        required: true
+        default: "3.3.2"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: curl-openssl-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CURL_VERSION: ${{ github.event.inputs.curl_version || '8.11.1' }}
+  OPENSSL_VERSION: ${{ github.event.inputs.openssl_version || '3.3.2' }}
+
+jobs:
+  msvc:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        link: [static, shared]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Setup NASM
+        uses: ilammy/setup-nasm@v1
+
+      - name: Setup Strawberry Perl
+        run: choco install strawberryperl -y --no-progress
+
+      - name: Build
+        shell: pwsh
+        env:
+          CURL_VERSION: ${{ env.CURL_VERSION }}
+          OPENSSL_VERSION: ${{ env.OPENSSL_VERSION }}
+        run: |
+          $env:Path = "C:\Strawberry\perl\bin;$env:Path"
+          ./scripts/build-msvc.ps1 -LinkType ${{ matrix.link }} -OutDir "$PWD/dist/windows-msvc-x64-${{ matrix.link }}"
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          $name = "curl-openssl-${{ env.CURL_VERSION }}-openssl-${{ env.OPENSSL_VERSION }}-windows-msvc-x64-${{ matrix.link }}"
+          Compress-Archive -Path "dist/windows-msvc-x64-${{ matrix.link }}\*" -DestinationPath "dist/$name.zip" -Force
+          Get-FileHash "dist/$name.zip" -Algorithm SHA256 | Format-List
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msvc-x64-${{ matrix.link }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  mingw:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        link: [static, shared]
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-perl
+            make
+            tar
+            curl
+            git
+
+      - name: Build
+        env:
+          CURL_VERSION: ${{ env.CURL_VERSION }}
+          OPENSSL_VERSION: ${{ env.OPENSSL_VERSION }}
+        run: |
+          chmod +x scripts/build-mingw.sh
+          ./scripts/build-mingw.sh ${{ matrix.link }} "$PWD/dist/windows-mingw-x64-${{ matrix.link }}"
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          $name = "curl-openssl-${{ env.CURL_VERSION }}-openssl-${{ env.OPENSSL_VERSION }}-windows-mingw-x64-${{ matrix.link }}"
+          Compress-Archive -Path "dist/windows-mingw-x64-${{ matrix.link }}\*" -DestinationPath "dist/$name.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mingw-x64-${{ matrix.link }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: [msvc, mingw]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten zips
+        run: |
+          mkdir -p dist
+          find artifacts -name '*.zip' -exec cp -v {} dist/ \;
+          ls -la dist
+          (cd dist && sha256sum *.zip > SHA256SUMS.txt)
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}-openssl-{1}', env.CURL_VERSION, env.OPENSSL_VERSION) }}
+          name: curl ${{ env.CURL_VERSION }} + OpenSSL ${{ env.OPENSSL_VERSION }}
+          body: |
+            Prebuilt **libcurl + OpenSSL** for Windows.
+
+            | Asset | Notes |
+            |-------|-------|
+            | `*-msvc-x64-static.zip` | MSVC static `.lib` (recommended for rim-agent) |
+            | `*-msvc-x64-shared.zip` | MSVC DLL |
+            | `*-mingw-x64-static.zip` | MinGW static `.a` |
+            | `*-mingw-x64-shared.zip` | MinGW DLL |
+
+            Consume with CMake `find_package(CurlOpenSSL)` — see README.
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

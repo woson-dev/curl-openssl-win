@@ -1,0 +1,14 @@
+# SPDX: scripts only — upstream curl/openssl keep their licenses in packages.
+
+.DS_Store
+Thumbs.db
+build/
+dist/
+*.zip
+*.tar.gz
+*.obj
+*.lib
+*.exe
+*.dll
+*.a
+*.o

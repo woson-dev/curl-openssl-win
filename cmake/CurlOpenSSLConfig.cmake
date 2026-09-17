@@ -1,7 +1,6 @@
 # Package config shipped inside each release zip (copied to share/cmake/CurlOpenSSL/).
 # Consumers: list(APPEND CMAKE_PREFIX_PATH <unzip_root>) ; find_package(CurlOpenSSL REQUIRED)
-
-@PACKAGE_INIT@
+# Note: this file is copied as-is (not via configure_package_config_file), so do not use @PACKAGE_INIT@.
 
 set(_CurlOpenSSL_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../..")
 get_filename_component(_CurlOpenSSL_ROOT "${_CurlOpenSSL_ROOT}" ABSOLUTE)
@@ -115,4 +114,3 @@ if(NOT TARGET CURL::libcurl)
 endif()
 
 set(CurlOpenSSL_FOUND TRUE)
-check_required_components(CurlOpenSSL)

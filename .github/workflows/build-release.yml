@@ -163,7 +163,7 @@ jobs:
             `include/` + `lib/` + `bin/curl.exe` (+ DLLs for shared) + CMake package.
 
             | Pattern | Notes |
-            |---------||-------|
+            |---------|-------|
             | `*-msvc-x64-static.zip` | MSVC x64 static (rim-agent) |
             | `*-msvc-x86-static.zip` | MSVC Win32 static |
             | `*-msvc-*-shared.zip` | MSVC DLL |

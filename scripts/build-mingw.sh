@@ -5,6 +5,11 @@
 #   ./scripts/build-mingw.sh shared /path/out
 set -euo pipefail
 
+# Prefer MSYS Perl (Unix paths). Windows Strawberry/ActivePerl breaks OpenSSL Configure.
+export PATH="/usr/bin:/mingw64/bin:${PATH:-}"
+hash -r || true
+echo "perl=$(command -v perl)"; perl -v | head -2
+
 LINK_TYPE="${1:-static}"
 OUT_DIR="${2:-}"
 CURL_VERSION="${CURL_VERSION:-8.11.1}"

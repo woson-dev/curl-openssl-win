@@ -1,9 +1,11 @@
-# Build OpenSSL + libcurl (MSVC x64) and stage a redistributable prefix.
-# Usage (from Developer PowerShell / GHA after vcvars):
-#   .\scripts\build-msvc.ps1 -LinkType static -OutDir D:\out\msvc-static
-#   .\scripts\build-msvc.ps1 -LinkType shared -OutDir D:\out\msvc-shared
+# Build OpenSSL + libcurl + curl.exe (MSVC).
+# Usage (Developer PowerShell / GHA after vcvars for the target arch):
+#   .\scripts\build-msvc.ps1 -Arch x64 -LinkType static
+#   .\scripts\build-msvc.ps1 -Arch x86 -LinkType shared
 
 param(
+  [ValidateSet("x64", "x86")]
+  [string]$Arch = "x64",
   [ValidateSet("static", "shared")]
   [string]$LinkType = "static",
   [string]$CurlVersion = $(if ($env:CURL_VERSION) { $env:CURL_VERSION } else { "8.11.1" }),
@@ -14,8 +16,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
-if (-not $WorkDir) { $WorkDir = Join-Path $Root "build\msvc-$LinkType" }
-if (-not $OutDir) { $OutDir = Join-Path $Root "dist\windows-msvc-x64-$LinkType" }
+if (-not $WorkDir) { $WorkDir = Join-Path $Root "build\msvc-$Arch-$LinkType" }
+if (-not $OutDir) { $OutDir = Join-Path $Root "dist\windows-msvc-$Arch-$LinkType" }
 
 New-Item -ItemType Directory -Force -Path $WorkDir, $OutDir | Out-Null
 $src = Join-Path $WorkDir "src"
@@ -27,10 +29,8 @@ function Get-Zip($Url, $Dest) {
   Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
 }
 
-function Expand-Clean($Zip, $Dest) {
-  if (Test-Path $Dest) { Remove-Item -Recurse -Force $Dest }
-  Expand-Archive -Path $Zip -DestinationPath (Split-Path $Dest) -Force
-}
+$sslTarget = if ($Arch -eq "x64") { "VC-WIN64A" } else { "VC-WIN32" }
+Write-Host "MSVC Arch=$Arch OpenSSL=$sslTarget LinkType=$LinkType"
 
 # --- OpenSSL ---
 $sslTag = "openssl-$OpenSslVersion"
@@ -39,24 +39,32 @@ $sslSrc = Join-Path $src $sslTag
 if (-not (Test-Path $sslSrc)) {
   Get-Zip "https://github.com/openssl/openssl/archive/refs/tags/$sslTag.zip" $sslZip
   Expand-Archive -Path $sslZip -DestinationPath $src -Force
-  # archive root is openssl-openssl-3.3.2
   $extracted = Get-ChildItem $src -Directory | Where-Object { $_.Name -like "openssl-*" } | Select-Object -First 1
-  if ($extracted.FullName -ne $sslSrc) { Rename-Item $extracted.FullName $sslSrc }
+  if ($extracted.FullName -ne $sslSrc) {
+    if (Test-Path $sslSrc) { Remove-Item -Recurse -Force $sslSrc }
+    Rename-Item $extracted.FullName $sslSrc
+  }
 }
 
 Push-Location $sslSrc
 $prefixSsl = Join-Path $stage "openssl"
 New-Item -ItemType Directory -Force -Path $prefixSsl | Out-Null
+# Fresh build tree per arch/link
+if (Test-Path "makefile") { nmake clean 2>$null | Out-Null }
+Remove-Item -Force makefile, Makefile -ErrorAction SilentlyContinue
 if ($LinkType -eq "static") {
-  perl Configure VC-WIN64A no-shared no-tests --prefix="$prefixSsl" --openssldir="$prefixSsl\ssl"
+  perl Configure $sslTarget no-shared no-tests --prefix="$prefixSsl" --openssldir="$prefixSsl\ssl"
 } else {
-  perl Configure VC-WIN64A shared no-tests --prefix="$prefixSsl" --openssldir="$prefixSsl\ssl"
+  perl Configure $sslTarget shared no-tests --prefix="$prefixSsl" --openssldir="$prefixSsl\ssl"
 }
+if ($LASTEXITCODE -ne 0) { throw "OpenSSL Configure failed" }
 nmake
+if ($LASTEXITCODE -ne 0) { throw "OpenSSL nmake failed" }
 nmake install_sw
+if ($LASTEXITCODE -ne 0) { throw "OpenSSL install_sw failed" }
 Pop-Location
 
-# --- curl ---
+# --- curl (+ curl.exe) ---
 $curlTag = "curl-$($CurlVersion.Replace('.','_'))"
 $curlZip = Join-Path $WorkDir "curl-$CurlVersion.zip"
 $curlSrc = Join-Path $src "curl-$CurlVersion"
@@ -79,7 +87,7 @@ $cmakeArgs = @(
   "-G", "Ninja",
   "-DCMAKE_BUILD_TYPE=Release",
   "-DCMAKE_INSTALL_PREFIX=$prefixCurl",
-  "-DBUILD_CURL_EXE=OFF",
+  "-DBUILD_CURL_EXE=ON",
   "-DBUILD_TESTING=OFF",
   "-DBUILD_EXAMPLES=OFF",
   "-DCURL_USE_OPENSSL=ON",
@@ -116,9 +124,17 @@ Copy-Item -Recurse -Force (Join-Path $prefixCurl "include\*") (Join-Path $OutDir
 Get-ChildItem (Join-Path $prefixSsl "lib") -File -ErrorAction SilentlyContinue | Copy-Item -Destination (Join-Path $OutDir "lib") -Force
 Get-ChildItem (Join-Path $prefixCurl "lib") -File -ErrorAction SilentlyContinue | Copy-Item -Destination (Join-Path $OutDir "lib") -Force
 Get-ChildItem (Join-Path $prefixSsl "bin") -Filter "*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination (Join-Path $OutDir "bin") -Force
-Get-ChildItem (Join-Path $prefixCurl "bin") -Filter "*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination (Join-Path $OutDir "bin") -Force
+Get-ChildItem (Join-Path $prefixCurl "bin") -ErrorAction SilentlyContinue | Copy-Item -Destination (Join-Path $OutDir "bin") -Force
 
-# Normalize MSVC curl static name to libcurl.lib when needed
+# Ensure curl.exe is present (install may put it under bin)
+$curlExe = Get-ChildItem -Path $prefixCurl, $curlBuild -Recurse -Filter "curl.exe" -ErrorAction SilentlyContinue |
+  Select-Object -First 1
+if ($curlExe) {
+  Copy-Item -Force $curlExe.FullName (Join-Path $OutDir "bin\curl.exe")
+} else {
+  throw "curl.exe not found after build"
+}
+
 $libDir = Join-Path $OutDir "lib"
 if (-not (Test-Path (Join-Path $libDir "libcurl.lib"))) {
   $cand = @("libcurl_a.lib", "curl.lib") | ForEach-Object { Join-Path $libDir $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -130,12 +146,14 @@ Copy-Item (Join-Path $Root "cmake\CurlOpenSSLConfig.cmake") (Join-Path $OutDir "
 curl=$CurlVersion
 openssl=$OpenSslVersion
 toolchain=msvc
-arch=x64
+arch=$Arch
 link=$LinkType
+tools=curl.exe
 "@ | Set-Content -Encoding ascii (Join-Path $OutDir "VERSION.txt")
 
 Copy-Item (Join-Path $curlSrc "COPYING") (Join-Path $OutDir "LICENSE-curl") -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $sslSrc "LICENSE.txt") (Join-Path $OutDir "LICENSE-openssl") -ErrorAction SilentlyContinue
 
-Write-Host "Staged $OutDir"
-Get-ChildItem $OutDir -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
+Write-Host "Staged $OutDir (curl.exe + libs)"
+Get-ChildItem (Join-Path $OutDir "bin") | Select-Object Name, Length
+Get-ChildItem (Join-Path $OutDir "lib") | Select-Object Name, Length

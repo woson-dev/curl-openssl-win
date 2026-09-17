@@ -33,13 +33,14 @@ jobs:
       fail-fast: false
       matrix:
         link: [static, shared]
+        arch: [x64, x86]
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: x64
+          arch: ${{ matrix.arch }}
 
       - name: Setup Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
@@ -57,18 +58,23 @@ jobs:
           OPENSSL_VERSION: ${{ env.OPENSSL_VERSION }}
         run: |
           $env:Path = "C:\Strawberry\perl\bin;$env:Path"
-          ./scripts/build-msvc.ps1 -LinkType ${{ matrix.link }} -OutDir "$PWD/dist/windows-msvc-x64-${{ matrix.link }}"
+          ./scripts/build-msvc.ps1 -Arch ${{ matrix.arch }} -LinkType ${{ matrix.link }} `
+            -OutDir "$PWD/dist/windows-msvc-${{ matrix.arch }}-${{ matrix.link }}"
 
       - name: Zip
         shell: pwsh
         run: |
-          $name = "curl-openssl-${{ env.CURL_VERSION }}-openssl-${{ env.OPENSSL_VERSION }}-windows-msvc-x64-${{ matrix.link }}"
-          Compress-Archive -Path "dist/windows-msvc-x64-${{ matrix.link }}\*" -DestinationPath "dist/$name.zip" -Force
-          Get-FileHash "dist/$name.zip" -Algorithm SHA256 | Format-List
+          $name = "curl-openssl-${{ env.CURL_VERSION }}-openssl-${{ env.OPENSSL_VERSION }}-windows-msvc-${{ matrix.arch }}-${{ matrix.link }}"
+          Compress-Archive -Path "dist/windows-msvc-${{ matrix.arch }}-${{ matrix.link }}\*" -DestinationPath "dist/$name.zip" -Force
+          # Also ship a tools-only zip with curl.exe (+ DLL deps for shared)
+          $tools = "dist/tools-msvc-${{ matrix.arch }}-${{ matrix.link }}"
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+          Copy-Item "dist/windows-msvc-${{ matrix.arch }}-${{ matrix.link }}\bin\*" $tools -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path "$tools\*" -DestinationPath "dist/curl-${{ env.CURL_VERSION }}-openssl-${{ env.OPENSSL_VERSION }}-windows-msvc-${{ matrix.arch }}-${{ matrix.link }}-tools.zip" -Force
 
       - uses: actions/upload-artifact@v4
         with:
-          name: msvc-x64-${{ matrix.link }}
+          name: msvc-${{ matrix.arch }}-${{ matrix.link }}
           path: dist/*.zip
           if-no-files-found: error
 
@@ -78,6 +84,14 @@ jobs:
       fail-fast: false
       matrix:
         link: [static, shared]
+        arch: [x64, x86]
+        include:
+          - arch: x64
+            msystem: MINGW64
+            packages: mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
+          - arch: x86
+            msystem: MINGW32
+            packages: mingw-w64-i686-toolchain mingw-w64-i686-cmake mingw-w64-i686-ninja
     defaults:
       run:
         shell: msys2 {0}
@@ -86,12 +100,10 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: ${{ matrix.msystem }}
           update: true
           install: >-
-            mingw-w64-x86_64-toolchain
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
+            ${{ matrix.packages }}
             make
             tar
             curl
@@ -105,17 +117,21 @@ jobs:
           OPENSSL_VERSION: ${{ env.OPENSSL_VERSION }}
         run: |
           chmod +x scripts/build-mingw.sh
-          ./scripts/build-mingw.sh ${{ matrix.link }} "$PWD/dist/windows-mingw-x64-${{ matrix.link }}"
+          ./scripts/build-mingw.sh ${{ matrix.link }} ${{ matrix.arch }} "$PWD/dist/windows-mingw-${{ matrix.arch }}-${{ matrix.link }}"
 
       - name: Zip
         shell: pwsh
         run: |
-          $name = "curl-openssl-${{ env.CURL_VERSION }}-openssl-${{ env.OPENSSL_VERSION }}-windows-mingw-x64-${{ matrix.link }}"
-          Compress-Archive -Path "dist/windows-mingw-x64-${{ matrix.link }}\*" -DestinationPath "dist/$name.zip" -Force
+          $name = "curl-openssl-${{ env.CURL_VERSION }}-openssl-${{ env.OPENSSL_VERSION }}-windows-mingw-${{ matrix.arch }}-${{ matrix.link }}"
+          Compress-Archive -Path "dist/windows-mingw-${{ matrix.arch }}-${{ matrix.link }}\*" -DestinationPath "dist/$name.zip" -Force
+          $tools = "dist/tools-mingw-${{ matrix.arch }}-${{ matrix.link }}"
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+          Copy-Item "dist/windows-mingw-${{ matrix.arch }}-${{ matrix.link }}\bin\*" $tools -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path "$tools\*" -DestinationPath "dist/curl-${{ env.CURL_VERSION }}-openssl-${{ env.OPENSSL_VERSION }}-windows-mingw-${{ matrix.arch }}-${{ matrix.link }}-tools.zip" -Force
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mingw-x64-${{ matrix.link }}
+          name: mingw-${{ matrix.arch }}-${{ matrix.link }}
           path: dist/*.zip
           if-no-files-found: error
 
@@ -141,16 +157,18 @@ jobs:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}-openssl-{1}', env.CURL_VERSION, env.OPENSSL_VERSION) }}
           name: curl ${{ env.CURL_VERSION }} + OpenSSL ${{ env.OPENSSL_VERSION }}
           body: |
-            Prebuilt **libcurl + OpenSSL** for Windows.
+            Prebuilt **libcurl + OpenSSL + curl.exe** for Windows.
 
-            | Asset | Notes |
-            |-------|-------|
-            | `*-msvc-x64-static.zip` | MSVC static `.lib` (recommended for rim-agent) |
-            | `*-msvc-x64-shared.zip` | MSVC DLL |
-            | `*-mingw-x64-static.zip` | MinGW static `.a` |
-            | `*-mingw-x64-shared.zip` | MinGW DLL |
+            ### SDK zips (`curl-openssl-*-windows-...`)
+            `include/` + `lib/` + `bin/curl.exe` (+ DLLs for shared) + CMake package.
 
-            Consume with CMake `find_package(CurlOpenSSL)` — see README.
+            | Pattern | Notes |
+            |---------||-------|
+            | `*-msvc-x64-static.zip` | MSVC x64 static (rim-agent) |
+            | `*-msvc-x86-static.zip` | MSVC Win32 static |
+            | `*-msvc-*-shared.zip` | MSVC DLL |
+            | `*-mingw-x64-*` / `*-mingw-x86-*` | MinGW-w64 |
+            | `curl-*-tools.zip` | CLI only: curl.exe (+ DLLs if shared) |
           files: |
             dist/*.zip
             dist/SHA256SUMS.txt

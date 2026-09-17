@@ -1,53 +1,57 @@
 # curl-openssl-win
 
-Windows **libcurl + OpenSSL** 预编译包，供 `rim-agent` 及其他项目统一使用（**不依赖 Qt Network / Schannel**）。
+Windows **libcurl + OpenSSL + curl.exe** 预编译包，供 `rim-agent` 及其他项目使用。
 
-## 产物矩阵（GitHub Actions → Release Assets）
+## 产物矩阵
 
-| 文件名模式 | 工具链 | 链接 |
-|-----------|--------|------|
-| `curl-openssl-*-windows-msvc-x64-static.zip` | MSVC x64 | 静态 `.lib` |
-| `curl-openssl-*-windows-msvc-x64-shared.zip` | MSVC x64 | 动态 `.dll` + import `.lib` |
-| `curl-openssl-*-windows-mingw-x64-static.zip` | MinGW-w64 x64 | 静态 `.a` |
-| `curl-openssl-*-windows-mingw-x64-shared.zip` | MinGW-w64 x64 | 动态 `.dll` + `.dll.a` |
+每个组合都会生成：
 
-每个 zip 布局：
+1. **SDK zip**：`curl-openssl-<curl>-openssl-<ssl>-windows-<tc>-<arch>-<link>.zip`  
+   - `include/` `lib/` `bin/curl.exe`（shared 另含 DLL）+ CMake 包  
+2. **Tools zip**：`curl-<curl>-openssl-<ssl>-windows-<tc>-<arch>-<link>-tools.zip`  
+   - 仅 `bin/`（standalone CLI，方便单独拷贝使用）
 
+| 工具链 | 架构 | 链接 |
+|--------|------|------|
+| `msvc` | `x64` / `x86` | `static` / `shared` |
+| `mingw` | `x64` / `x86` | `static` / `shared` |
+
+默认版本：curl **8.11.1** + OpenSSL **3.3.2**。
+
+## 单独使用 curl.exe
+
+解压任意 `*-tools.zip`（或 SDK 的 `bin/`）：
+
+```bat
+curl.exe -V
+curl.exe https://example.com/
 ```
-include/curl/...
-include/openssl/...
-lib/...
-bin/...          # shared 包才有
-share/cmake/CurlOpenSSL/CurlOpenSSLConfig.cmake
-VERSION.txt
-```
 
-默认版本：`curl 8.11.1` + `OpenSSL 3.3.2`（可用 workflow_dispatch / tag 覆盖）。
+- **static**：通常只要一个 `curl.exe`  
+- **shared**：需同目录的 `libcurl*.dll` / `libssl*.dll` / `libcrypto*.dll`
 
-## 消费方式（CMake）
+## CMake 消费（SDK zip）
 
 ```cmake
-# 解压 Release zip 后：
 set(CurlOpenSSL_ROOT "C:/deps/curl-openssl-windows-msvc-x64-static")
 list(APPEND CMAKE_PREFIX_PATH "${CurlOpenSSL_ROOT}")
 find_package(CurlOpenSSL REQUIRED)
-
-target_link_libraries(myapp PRIVATE CurlOpenSSL::curl)
-# 同时提供 CURL::libcurl 别名，兼容现有 find_package(CURL) 写法
+target_link_libraries(myapp PRIVATE CurlOpenSSL::curl)  # alias: CURL::libcurl
 ```
 
-环境变量 / CMake 缓存：
+环境变量：`CURL_OPENSSL_ROOT` / `MED_CURL_OPENSSL_ROOT`。
 
-| 变量 | 说明 |
-|------|------|
-| `CURL_OPENSSL_ROOT` / `CurlOpenSSL_ROOT` | 解压根目录 |
-| `MED_CURL_OPENSSL_URL` | （可选）Release zip URL，构建时自动下载 |
+## 本地构建
 
-## 触发构建
+```powershell
+# MSVC x86 static（先 vcvars32 / msvc-dev-cmd arch=x86）
+.\scripts\build-msvc.ps1 -Arch x86 -LinkType static
 
-- Push tag `v*` → 打 Release 并上传全部矩阵
-- `workflow_dispatch` → 可选手动版本号
+# MinGW x64（MSYS2 MINGW64）
+./scripts/build-mingw.sh static x64
+./scripts/build-mingw.sh shared x86
+```
 
-## 许可证
+## 触发 CI
 
-上游 [curl](https://curl.se/docs/copyright.html) / [OpenSSL](https://www.openssl.org/source/license.html) 许可证随包 `LICENSE-*` 文件分发。
+Push tag `v*` 或 `workflow_dispatch`。
